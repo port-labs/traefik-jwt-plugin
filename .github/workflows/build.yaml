@@ -1,5 +1,6 @@
 name: Build
 on:
+  workflow_dispatch: {}
   push:
     branches:
       - main
@@ -10,6 +11,29 @@ on:
   pull_request:
     branches:
       - main
+
 jobs:
   build:
-    uses: traefik-plugins/workflows/.github/workflows/build.yaml@main
+    name: Build
+    runs-on: ubuntu-latest
+    env:
+      GOLANGCI_LINT_VERSION: v1.50.0
+      YAEGI_VERSION: v0.14.3
+      ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 10
+      - uses: wagoid/commitlint-github-action@v5
+      - uses: actions/setup-go@v4
+        with:
+          go-version-file: ${{ github.workspace }}/go.mod
+      - uses: golangci/golangci-lint-action@v3
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          args: "--help"
+      - name: setup yaegi
+        run: curl -sfL https://raw.githubusercontent.com/traefik/yaegi/master/install.sh | bash -s -- -b /home/runner/.local/bin ${YAEGI_VERSION}
+      - uses: extractions/setup-just@v1
+      - name: test
+        run: just test
