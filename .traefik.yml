@@ -1,7 +1,7 @@
 displayName: JWT And OPA Access Management
 type: middleware
 
-import: github.com/traefik-plugins/traefik-jwt-plugin
+import: github.com/yairsimantov20/traefik-jwt-plugin
 
 summary: Checks JWT tokens for required fields. Supports Open Policy Agent (OPA) and signature validation with JWKS.
 
@@ -15,6 +15,7 @@ testData:
     - exp
   Required: true
   Keys:
+    - urn:k8s:secret:secret-name:secret-key
     - |
       -----BEGIN PUBLIC KEY-----
       MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnzyis1ZjfNB0bBgKFMSv

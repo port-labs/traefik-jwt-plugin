@@ -34,7 +34,7 @@ experimental:
 
 ```sh
 traefik \
-  --experimental.plugins.jwt.moduleName=github.com/traefik-plugins/traefik-jwt-plugin \
+  --experimental.plugins.jwt.moduleName=github.com/port-labs/traefik-jwt-plugin \
   --experimental.plugins.jwt.version=v0.7.1
 ```
 
