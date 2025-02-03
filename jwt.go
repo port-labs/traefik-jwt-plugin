@@ -15,12 +15,16 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 	"math/big"
 	"mime"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +33,8 @@ import (
 
 // map of cancel  functions for background refresh. whe a new configuration is loaded, the old background refresh with the same name is cancelled
 var backgroundRefreshCancel map[string]context.CancelFunc = make(map[string]context.CancelFunc)
+var SecretPatternRegex = regexp.MustCompile(`^urn:k8s:secret:([^:]+):([^:]+)$`)
+var DEFAULT_NAMESPACE = "traefik"
 
 // Config the plugin configuration.
 type Config struct {
@@ -72,6 +78,7 @@ type JwtPlugin struct {
 	required           bool
 	jwkEndpoints       []*url.URL
 	keys               map[string]interface{}
+	signingKey         string
 	alg                string
 	opaHeaders         map[string]string
 	jwtHeaders         map[string]string
@@ -79,6 +86,7 @@ type JwtPlugin struct {
 	opaResponseHeaders map[string]string
 	opaHttpStatusField string
 	jwtSources         []map[string]string
+	namespace          string
 
 	name            string
 	keysLock        sync.RWMutex
@@ -204,6 +212,10 @@ func New(ctx context.Context, next http.Handler, config *Config, pluginName stri
 			jwtPlugin.jwtSources = append(jwtPlugin.jwtSources, map[string]string{"type": "query", "key": config.JwtQueryKey})
 		}
 	}
+	if jwtPlugin.namespace == "" {
+		jwtPlugin.namespace = DEFAULT_NAMESPACE
+	}
+
 	if len(config.Keys) > 0 {
 		if err := jwtPlugin.ParseKeys(config.Keys); err != nil {
 			return nil, err
@@ -255,8 +267,9 @@ func (jwtPlugin *JwtPlugin) forceRefreshKeys() (refreshed bool) {
 func (jwtPlugin *JwtPlugin) ParseKeys(certificates []string) error {
 	jwtPlugin.keysLock.Lock()
 	defer jwtPlugin.keysLock.Unlock()
+	secrets, nonUrns := processSecrets(certificates, jwtPlugin.namespace)
 
-	for _, certificate := range certificates {
+	parse := func(certificate string) error {
 		if block, rest := pem.Decode([]byte(certificate)); block != nil {
 			if len(rest) > 0 {
 				return fmt.Errorf("extra data after a PEM certificate block")
@@ -279,9 +292,25 @@ func (jwtPlugin *JwtPlugin) ParseKeys(certificates []string) error {
 		} else if u, err := url.ParseRequestURI(certificate); err == nil {
 			jwtPlugin.jwkEndpoints = append(jwtPlugin.jwkEndpoints, u)
 		} else {
-			return fmt.Errorf("Invalid configuration, expecting a certificate, public key or JWK URL")
+			return fmt.Errorf("failed to parse a Key from the PEM certificate")
+		}
+
+		return nil
+	}
+
+	for _, certificate := range nonUrns {
+		if err := parse(certificate); err != nil {
+			return fmt.Errorf("failed to parse a Key from the PEM certificate: %v", err)
 		}
 	}
+
+	// When iterating values that came from k8s secrets if they are not pem encoded they are used as signing keys
+	for _, secret := range secrets {
+		if err := parse(secret); err != nil {
+			jwtPlugin.signingKey = secret
+		}
+	}
+
 	return nil
 }
 
@@ -434,7 +463,7 @@ func (jwtPlugin *JwtPlugin) CheckToken(request *http.Request, rw http.ResponseWr
 	if jwtToken != nil {
 		sub = fmt.Sprint(jwtToken.Payload["sub"])
 		// only verify jwt tokens if keys are configured
-		if len(jwtPlugin.getKeysSync()) > 0 || len(jwtPlugin.jwkEndpoints) > 0 {
+		if len(jwtPlugin.getKeysSync()) > 0 || len(jwtPlugin.jwkEndpoints) > 0 || jwtPlugin.signingKey != "" {
 			if err = jwtPlugin.VerifyToken(jwtToken); err != nil {
 				logError(fmt.Sprintf("Token is invalid - err: %s", err.Error())).
 					withSub(sub).
@@ -667,11 +696,17 @@ func (jwtPlugin *JwtPlugin) VerifyToken(jwtToken *JWT) error {
 		return a.verify(key, a.hash, jwtToken.Plaintext, jwtToken.Signature)
 	} else {
 		for _, key := range jwtPlugin.getKeysSync() {
-			err := a.verify(key, a.hash, jwtToken.Plaintext, jwtToken.Signature)
-			if err == nil {
+			if err := a.verify(key, a.hash, jwtToken.Plaintext, jwtToken.Signature); err == nil {
 				return nil
 			}
 		}
+
+		if jwtPlugin.signingKey != "" {
+			if err := a.verify([]byte(jwtPlugin.signingKey), a.hash, jwtToken.Plaintext, jwtToken.Signature); err == nil {
+				return nil
+			}
+		}
+
 		return fmt.Errorf("token validation failed")
 	}
 }
@@ -751,6 +786,118 @@ func (jwtPlugin *JwtPlugin) CheckOpa(request *http.Request, token *JWT, rw http.
 		}
 	}
 	return 0, nil
+}
+
+func getK8sClient() (*kubernetes.Clientset, error) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	configOverrides := &clientcmd.ConfigOverrides{}
+	configClient := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+	config, _ := configClient.ClientConfig()
+
+	return kubernetes.NewForConfig(config)
+}
+
+// getSecret fetches the secret value from Kubernetes
+func getSecret(clientset *kubernetes.Clientset, secretName string, secretKey []string) ([]string, error) {
+	results := make([]string, 0)
+	secret, err := clientset.CoreV1().Secrets("traefik").Get(context.TODO(), secretName, metav1.GetOptions{})
+	if err != nil {
+		return results, err
+	}
+
+	for _, key := range secretKey {
+		value, exists := secret.Data[key]
+		if !exists {
+			return results, fmt.Errorf("key %s not found in secret %s", key, secretName)
+		}
+		results = append(results, string(value))
+	}
+
+	return results, nil
+}
+
+func contains(input []string, value string) bool {
+	for _, v := range input {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
+func GroupK8sUrn(input []string) (map[string][]string, []string) {
+	urnGroup := make(map[string][]string)
+	notUrns := make([]string, 0)
+
+	for _, str := range input {
+		matches := SecretPatternRegex.FindStringSubmatch(str)
+		if len(matches) == 3 {
+			secretName := matches[1]
+			secretKey := matches[2]
+
+			if _, exists := urnGroup[secretName]; !exists {
+				urnGroup[secretName] = make([]string, 0)
+			}
+			if !contains(urnGroup[secretName], secretKey) {
+				urnGroup[secretName] = append(urnGroup[secretName], secretKey)
+			}
+		} else {
+			notUrns = append(notUrns, str)
+		}
+	}
+
+	return urnGroup, notUrns
+}
+
+func processSecrets(secretURNs []string, k8sNamespace string) ([]string, []string) {
+	clientset, _ := getK8sClient()
+
+	var wg sync.WaitGroup
+	secretCh := make(chan struct {
+		secretName string
+		secretKeys []string
+	}, len(secretURNs))
+	resultCh := make(chan string, len(secretURNs))
+
+	// Worker function
+	worker := func() {
+		for urn := range secretCh {
+			secretValues, _ := getSecret(clientset, urn.secretName, urn.secretKeys)
+			for _, secretValue := range secretValues {
+				resultCh <- secretValue
+			}
+		}
+		wg.Done()
+	}
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go worker()
+	}
+
+	// Send signingKey to workers
+	groups, notUrns := GroupK8sUrn(secretURNs)
+	for secretName, secretKeys := range groups {
+		secretCh <- struct {
+			secretName string
+			secretKeys []string
+		}{secretName, secretKeys}
+	}
+	close(secretCh)
+
+	// Wait for workers to complete
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	// Collect results
+	var secrets []string
+	for res := range resultCh {
+		secrets = append(secrets, res)
+	}
+
+	return secrets, notUrns
 }
 
 func toOPAPayload(request *http.Request, includeBody bool) (*Payload, error) {
