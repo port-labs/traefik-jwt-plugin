@@ -19,7 +19,7 @@ The plugin needs to be configured in the Traefik static configuration before it 
 ### Kubernetes
 
 Tested with [official Traefik chart](https://artifacthub.io/packages/helm/traefik/traefik) version 26.0.0.
-
+#
 The following snippet should be added to `values.yaml`:
 
 ```yaml
