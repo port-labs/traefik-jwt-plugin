@@ -1,7 +1,7 @@
-displayName: JWT And OPA Access Management
+displayName: JWT With K8s Secrets Access
 type: middleware
 
-import: github.com/yairsimantov20/traefik-jwt-plugin
+import: github.com/port-labs/traefik-jwt-plugin
 
 summary: Checks JWT tokens for required fields. Supports Open Policy Agent (OPA) and signature validation with JWKS.
 
