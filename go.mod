@@ -1,4 +1,4 @@
-module github.com/traefik-plugins/traefik-jwt-plugin
+module github.com/port-labs/traefik-jwt-plugin
 
 go 1.23.0
 

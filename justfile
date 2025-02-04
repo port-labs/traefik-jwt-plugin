@@ -19,7 +19,7 @@ test-yaegi: && _clean-yaegi
   set -euox
 
   TMP=$(mktemp -d yaegi.XXXXXX -p /tmp)
-  WRK="${TMP}/go/src/github.com/traefik-plugins"
+  WRK="${TMP}/go/src/github.com/port-labs"
   mkdir -p ${WRK}
   ln -s `pwd` "${WRK}"
   cd "${WRK}/$(basename `pwd`)"

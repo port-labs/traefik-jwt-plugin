@@ -26,7 +26,7 @@ The following snippet should be added to `values.yaml`:
 experimental:
   plugins:
     jwt:
-      moduleName: github.com/traefik-plugins/traefik-jwt-plugin
+      moduleName: github.com/port-labs/traefik-jwt-plugin
       version: v0.7.1
 ```
 
