@@ -2,6 +2,6 @@
   "devDependencies": {
     "@commitlint/config-conventional": "^17.3.0",
     "@semantic-release/git": "^10.0.1",
-    "semantic-release": "^19.0.5"
+    "semantic-release": "^25.0.7"
   }
 }
